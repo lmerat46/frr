@@ -120,10 +120,13 @@ find_neighbour(const unsigned char *address, struct interface *ifp)
 
 /* Recompute a neighbour's rxcost.  Return true if anything changed. */
 int
-update_neighbour(struct neighbour *neigh, int hello, int hello_interval)
+update_neighbour(struct neighbour *neigh, int unicast, int hello, int hello_interval)
 {
     int missed_hellos;
     int rc = 0;
+
+     if(unicast)
+	return rc;
 
     if(hello < 0) {
         if(neigh->hello_interval == 0)
@@ -164,8 +167,10 @@ update_neighbour(struct neighbour *neigh, int hello, int hello_interval)
         } else {
             missed_hellos = 0;
         }
-        neigh->hello_time = babel_now;
-        neigh->hello_interval = hello_interval;
+	if(hello_interval != 0) {
+            neigh->hello_time = babel_now;
+            neigh->hello_interval = hello_interval;
+        }
     }
 
     if(missed_hellos > 0) {
@@ -244,7 +249,7 @@ check_neighbours(void)
 
     neigh = neighs;
     while(neigh) {
-        changed = update_neighbour(neigh, -1, 0);
+	changed = update_neighbour(neigh, 0, -1, 0);
 
         if(neigh->reach == 0 ||
            neigh->hello_time.tv_sec > babel_now.tv_sec || /* clock stepped */

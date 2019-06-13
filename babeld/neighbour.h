@@ -53,7 +53,7 @@ int neighbour_valid(struct neighbour *neigh);
 void flush_neighbour(struct neighbour *neigh);
 struct neighbour *find_neighbour(const unsigned char *address,
                                  struct interface *ifp);
-int update_neighbour(struct neighbour *neigh, int hello, int hello_interval);
+int update_neighbour(struct neighbour *neigh, int unicast, int hello, int hello_interval);
 unsigned check_neighbours(void);
 unsigned neighbour_txcost(struct neighbour *neigh);
 unsigned neighbour_rxcost(struct neighbour *neigh);

@@ -127,7 +127,7 @@ network_prefix(int ae, int plen, unsigned int omitted,
     return ret;
 }
 
-static void
+static int
 parse_update_subtlv(const unsigned char *a, int alen,
                     unsigned char *channels)
 {
@@ -141,13 +141,11 @@ parse_update_subtlv(const unsigned char *a, int alen,
         }
 
         if(i + 1 > alen) {
-            flog_err(EC_BABEL_PACKET, "Received truncated attributes.");
-            return;
+	    goto fail;
         }
         len = a[i + 1];
         if(i + len > alen) {
-            flog_err(EC_BABEL_PACKET, "Received truncated attributes.");
-            return;
+	    goto fail;
         }
 
         if(type == SUBTLV_PADN) {
@@ -162,17 +160,24 @@ parse_update_subtlv(const unsigned char *a, int alen,
             if(memchr(a + i + 2, 0, len) != NULL) {
                 /* 0 is reserved. */
                 flog_err(EC_BABEL_PACKET, "Channel information contains 0!");
-                return;
+                return -1;
             }
             memset(channels, 0, DIVERSITY_HOPS);
             memcpy(channels, a + i + 2, len);
         } else {
-            debugf(BABEL_DEBUG_COMMON,
-                   "Received unknown route attribute %d.", type);
+            debugf(BABEL_DEBUG_COMMON, "Received unknown%s Update sub-TLV %d.\n",
+                   (type & 0x80) != 0 ? " mandatory" : "", type);
+            if((type & 0x80) != 0)
+                return -1;
         }
 
         i += len + 2;
     }
+    return 1;
+
+ fail:
+   flog_err(EC_BABEL_PACKET, "Received truncated attributes.");
+   return -1;
 }
 
 static int
@@ -211,8 +216,10 @@ parse_hello_subtlv(const unsigned char *a, int alen,
 			  "Received incorrect RTT sub-TLV on Hello message.");
             }
         } else {
-            debugf(BABEL_DEBUG_COMMON,
-                   "Received unknown Hello sub-TLV type %d.", type);
+            debugf(BABEL_DEBUG_COMMON, "Received unknown%s Update sub-TLV %d.\n",
+                   (type & 0x80) != 0 ? " mandatory" : "", type);
+            if((type & 0x80) != 0)
+                return -1;
         }
 
         i += len + 2;
@@ -259,13 +266,148 @@ parse_ihu_subtlv(const unsigned char *a, int alen,
 			  "Received incorrect RTT sub-TLV on IHU message.");
             }
         } else {
-            debugf(BABEL_DEBUG_COMMON,
-                   "Received unknown IHU sub-TLV type %d.", type);
+            debugf(BABEL_DEBUG_COMMON, "Received unknown%s Update sub-TLV %d.\n",
+                   (type & 0x80) != 0 ? " mandatory" : "", type);
+            if((type & 0x80) != 0)
+                return -1;
         }
 
         i += len + 2;
     }
     return ret;
+}
+
+static int
+parse_request_subtlv(int ae, const unsigned char *a, int alen,
+                     unsigned char *src_prefix, unsigned char *src_plen)
+{
+    int type, len, i = 0;
+
+    *src_plen = 0;
+
+    while(i < alen) {
+        type = a[0];
+        if(type == SUBTLV_PAD1) {
+            i++;
+            continue;
+        }
+
+        if(i + 1 > alen)
+            goto fail;
+
+        len = a[i + 1];
+        if(i + len > alen)
+            goto fail;
+
+        if(type == SUBTLV_PADN) {
+            /* Nothing to do. */
+        } else if(type == SUBTLV_SOURCE_PREFIX) {
+            int rc;
+            if(len < 1)
+                goto fail;
+            if(a[i + 2] == 0)
+                goto fail;
+            if(*src_plen != 0)
+                goto fail;
+            *src_plen = a[i + 2];
+            rc = network_prefix(ae, *src_plen, 0, a + i + 3, NULL,
+                                len - 1, src_prefix);
+            if(rc < 0)
+                goto fail;
+            if(ae == 1)
+                (*src_plen) += 96;
+        } else {
+	    debugf(BABEL_DEBUG_COMMON, "Received unknown%s Route Request sub-TLV %d.\n",
+                   ((type & 0x80) != 0) ? " mandatory" : "", type);
+            if((type & 0x80) != 0)
+                return -1;
+        }
+
+        i += len + 2;
+    }
+    return 1;
+
+ fail:
+    fprintf(stderr, "Received truncated sub-TLV on Route Request.\n");
+    return -1;
+}
+
+static int
+parse_seqno_request_subtlv(int ae, const unsigned char *a, int alen,
+                           unsigned char *src_prefix, unsigned char *src_plen)
+{
+    int type, len, i = 0;
+
+    while(i < alen) {
+        type = a[0];
+        if(type == SUBTLV_PAD1) {
+            i++;
+            continue;
+        }
+
+        if(i + 1 > alen)
+            goto fail;
+        len = a[i + 1];
+        if(i + len + 2 > alen)
+            goto fail;
+
+        if(type == SUBTLV_PADN) {
+            /* Nothing to do. */
+        } else if(type == SUBTLV_SOURCE_PREFIX) {
+            int rc;
+            if(len < 1)
+                goto fail;
+            *src_plen = a[i + 2];
+            rc = network_prefix(ae, *src_plen, 0, a + i + 3, NULL,
+                                len - 1, src_prefix);
+            if(rc < 0)
+                goto fail;
+            if(ae == 1)
+                (*src_plen) += 96;
+        } else {
+	    debugf(BABEL_DEBUG_COMMON, "Received unknown%s Route Request sub-TLV %d.\n",
+                   ((type & 0x80) != 0) ? " mandatory" : "", type);
+            if((type & 0x80) != 0)
+                return -1;
+        }
+
+        i += len + 2;
+    }
+    return 1;
+ fail:
+    fprintf(stderr, "Received truncated sub-TLV on Route Request.\n");
+    return -1;
+}
+
+static int
+parse_other_subtlv(const unsigned char *a, int alen)
+{
+    int type, len, i = 0;
+
+    while(i < alen) {
+        type = a[0];
+        if(type == SUBTLV_PAD1) {
+            i++;
+            continue;
+        }
+
+        if(i + 1 > alen)
+            goto fail;
+        len = a[i + 1];
+        if(i + len > alen)
+            goto fail;
+
+        if((type & 0x80) != 0) {
+	    debugf(BABEL_DEBUG_COMMON, "Received unknown mandatory sub-TLV %d.\n", type);
+            return -1;
+        }
+
+        i += len + 2;
+    }
+    return 1;
+ fail:
+    fprintf(stderr, "Received truncated sub-TLV.\n");
+    return -1;
 }
 
 static int
@@ -389,37 +531,55 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                    len, format_address(from), ifp->name);
         } else if(type == MESSAGE_ACK_REQ) {
             unsigned short nonce, interval;
+	    int rc = 0;
             DO_NTOHS(nonce, message + 4);
             DO_NTOHS(interval, message + 6);
             debugf(BABEL_DEBUG_COMMON,"Received ack-req (%04X %d) from %s on %s.",
                    nonce, interval, format_address(from), ifp->name);
+	    if(len > 10 + rc){
+	        rc = parse_other_subtlv(message + 8, len - 6);
+		if(rc < 0)
+		    goto done;
+	    }
             send_ack(neigh, nonce, interval);
         } else if(type == MESSAGE_ACK) {
+	    int rc = 0;
             debugf(BABEL_DEBUG_COMMON,"Received ack from %s on %s.",
                    format_address(from), ifp->name);
+	    if(len > 10 + rc){
+		rc = parse_other_subtlv(message + 4, len - 2);
+		if(rc < 0)
+		    goto done;
+	    }
             /* Nothing right now */
         } else if(type == MESSAGE_HELLO) {
             unsigned short seqno, interval;
-            int changed;
+            int changed, unicast, rc;
             unsigned int timestamp = 0;
+
+	    unicast = !!(message[2] & 0x80);
             DO_NTOHS(seqno, message + 4);
             DO_NTOHS(interval, message + 6);
             debugf(BABEL_DEBUG_COMMON,"Received hello %d (%d) from %s on %s.",
                    seqno, interval,
                    format_address(from), ifp->name);
-            changed = update_neighbour(neigh, seqno, interval);
+	    /* Sub-TLV handling. */
+            if(len > 8) {
+		rc = parse_hello_subtlv(message + 8, len - 6, &timestamp);
+		if(rc < 0)
+		    goto done;
+		if(rc > 0){
+                    neigh->hello_send_us = timestamp;
+                    neigh->hello_rtt_receive_time = babel_now;
+                    have_hello_rtt = 1;
+		}
+            }
+	    /* Sub-TLV handling. */
+            changed = update_neighbour(neigh, unicast, seqno, interval);
             update_neighbour_metric(neigh, changed);
             if(interval > 0)
                 /* Multiply by 3/2 to allow hellos to expire. */
                 schedule_neighbours_check(interval * 15, 0);
-            /* Sub-TLV handling. */
-            if(len > 8) {
-                if(parse_hello_subtlv(message + 8, len - 6, &timestamp) > 0) {
-                    neigh->hello_send_us = timestamp;
-                    neigh->hello_rtt_receive_time = babel_now;
-                    have_hello_rtt = 1;
-                }
-            }
         } else if(type == MESSAGE_IHU) {
             unsigned short txcost, interval;
             unsigned char address[16];
@@ -428,6 +588,13 @@ parse_packet(const unsigned char *from, struct interface *ifp,
             DO_NTOHS(interval, message + 6);
             rc = network_address(message[2], message + 8, len - 6, address);
             if(rc < 0) goto fail;
+	    /* RTT sub-TLV. */
+	    if(len > 10 + rc){
+		rc = parse_ihu_subtlv(message + 8 + rc, len - 6 - rc,
+                                      &hello_send_us, &hello_rtt_receive_time);
+		if(rc < 0)
+		    goto done;
+	    }
             debugf(BABEL_DEBUG_COMMON,"Received ihu %d (%d) from %s on %s for %s.",
                    txcost, interval,
                    format_address(from), ifp->name,
@@ -441,16 +608,18 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                 if(interval > 0)
                     /* Multiply by 3/2 to allow neighbours to expire. */
                     schedule_neighbours_check(interval * 45, 0);
-                /* RTT sub-TLV. */
-                if(len > 10 + rc)
-                    parse_ihu_subtlv(message + 8 + rc, len - 6 - rc,
-                                     &hello_send_us, &hello_rtt_receive_time);
             }
         } else if(type == MESSAGE_ROUTER_ID) {
+	    int rc = 0;
             memcpy(router_id, message + 4, 8);
             have_router_id = 1;
             debugf(BABEL_DEBUG_COMMON,"Received router-id %s from %s on %s.",
                    format_eui64(router_id), format_address(from), ifp->name);
+	    if(len > 10 + rc){
+		rc = parse_other_subtlv(message + 12, len - 10);
+		if(rc < 0)
+		    goto done;
+	    }
         } else if(type == MESSAGE_NH) {
             unsigned char nh[16];
             int rc;
@@ -471,6 +640,11 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                 memcpy(v6_nh, nh, 16);
                 have_v6_nh = 1;
             }
+	    if(len > 10 + rc){
+		rc = parse_other_subtlv(message + 4 + rc, len - 2 - rc);
+		if(rc < 0)
+		    goto done;
+	    }
         } else if(type == MESSAGE_UPDATE) {
             unsigned char prefix[16], *nh;
             unsigned char plen;
@@ -526,15 +700,7 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                    format_prefix(prefix, plen),
                    format_address(from), ifp->name);
 
-            if(message[2] == 0) {
-                if(metric < 0xFFFF) {
-                    flog_err(EC_BABEL_PACKET,
-			      "Received wildcard update with finite metric.");
-                    goto done;
-                }
-                retract_neighbour_routes(neigh);
-                goto done;
-            } else if(message[2] == 1) {
+            if(message[2] == 1) {
                 if(!have_v4_nh)
                     goto fail;
                 nh = v4_nh;
@@ -543,6 +709,23 @@ parse_packet(const unsigned char *from, struct interface *ifp,
             } else {
                 nh = neigh->address;
             }
+
+	    if(parsed_len < len){
+                rc = parse_update_subtlv(message + 2 + parsed_len,
+					len - parsed_len, channels);
+		if(rc < 0)
+		    goto done;
+	    }
+
+	    if(message[2] == 0) {
+                if(metric < 0xFFFF) {
+                    fprintf(stderr,
+                            "Received wildcard update with finite metric.\n");
+                    goto done;
+                }
+                retract_neighbour_routes(neigh);
+                goto done;
+}
 
             if(message[2] == 1) {
                 if(!babel_get_if_nfo(ifp)->ipv4)
@@ -562,24 +745,34 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                     channels[1] = 0;
                 }
 
-                if(parsed_len < len)
-                    parse_update_subtlv(message + 2 + parsed_len,
-                                        len - parsed_len, channels);
             }
 
             update_route(router_id, prefix, plen, seqno, metric, interval,
                          neigh, nh,
                          channels, channels_len(channels));
         } else if(type == MESSAGE_REQUEST) {
-            unsigned char prefix[16], plen;
+            unsigned char prefix[16], src_prefix[16], plen, src_plen;
             int rc;
             rc = network_prefix(message[2], message[3], 0,
                                 message + 4, NULL, len - 2, prefix);
             if(rc < 0) goto fail;
             plen = message[3] + (message[2] == 1 ? 96 : 0);
+	    if(message[2] == 1) {
+                v4tov6(src_prefix, zeroes);
+                src_plen = 96;
+            } else {
+                memcpy(src_prefix, zeroes, 16);
+                src_plen = 0;
+	    }
             debugf(BABEL_DEBUG_COMMON,"Received request for %s from %s on %s.",
                    message[2] == 0 ? "any" : format_prefix(prefix, plen),
                    format_address(from), ifp->name);
+	    if(len > 10 + rc){
+	       rc = parse_request_subtlv(message[2], message + 4 + rc,
+                                    len - 2 - rc, src_prefix, &src_plen);
+	       if(rc < 0)
+		   goto done;
+	    }
             if(message[2] == 0) {
                 struct babel_interface *neigh_ifp =babel_get_if_nfo(neigh->ifp);
                 /* If a neighbour is requesting a full route dump from us,
@@ -597,7 +790,7 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                 send_update(neigh->ifp, 0, prefix, plen);
             }
         } else if(type == MESSAGE_MH_REQUEST) {
-            unsigned char prefix[16], plen;
+            unsigned char prefix[16], src_prefix[16], plen, src_plen;
             unsigned short seqno;
             int rc;
             DO_NTOHS(seqno, message + 4);
@@ -605,6 +798,13 @@ parse_packet(const unsigned char *from, struct interface *ifp,
                                 message + 16, NULL, len - 14, prefix);
             if(rc < 0) goto fail;
             plen = message[3] + (message[2] == 1 ? 96 : 0);
+	    if(len > 10 + rc){
+	       rc = parse_seqno_request_subtlv(message[2], message + 16 + rc,
+                                            len - 14 - rc, src_prefix,
+                                            &src_plen);
+	       if(rc < 0)
+		   goto done;
+	    }
             debugf(BABEL_DEBUG_COMMON,"Received request (%d) for %s from %s on %s (%s, %d).",
                    message[6],
                    format_prefix(prefix, plen),
